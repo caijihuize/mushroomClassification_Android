@@ -233,24 +233,45 @@ public class IdentifyFragment extends Fragment {
         return view;
     }
 
+    private List<String> getModelFiles() {
+        List<String> modelFiles = new ArrayList<>();
+        try {
+            String[] files = requireContext().getAssets().list("models");
+            if (files != null) {
+                for (String file : files) {
+                    if (file.endsWith(".tflite")) {
+                        modelFiles.add(file);
+                    }
+                }
+            }
+            Log.d(TAG, "找到" + modelFiles.size() + "个模型文件：" + modelFiles);
+        } catch (IOException e) {
+            Log.e(TAG, "读取模型文件列表失败: " + e.getMessage());
+        }
+        return modelFiles;
+    }
+
     private void setupModelSpinner() {
         Log.d(TAG, "开始设置模型选择器");
-        // 准备模型列表（文件名和大小）
+        // 清除旧的映射
         modelPathMap.clear();
         List<String> modelNames = new ArrayList<>();
 
-        // 添加新模型
-        modelPathMap.put("MobileNetV1.tflite", "models/MobileNetV1.tflite");
-        modelNames.add("MobileNetV1.tflite");
+        // 获取models目录下的所有.tflite文件
+        List<String> modelFiles = getModelFiles();
         
-        modelPathMap.put("MobileNetV2.tflite", "models/MobileNetV2.tflite");
-        modelNames.add("MobileNetV2.tflite");
+        // 添加找到的所有模型
+        for (String modelFile : modelFiles) {
+            modelPathMap.put(modelFile, "models/" + modelFile);
+            modelNames.add(modelFile);
+        }
         
-        modelPathMap.put("ResNet101.tflite", "models/ResNet101.tflite");
-        modelNames.add("ResNet101.tflite");
-        
-        modelPathMap.put("EfficientNetB0.tflite", "models/EfficientNetB0.tflite");
-        modelNames.add("EfficientNetB0.tflite");
+        // 如果没有找到任何模型文件
+        if (modelNames.isEmpty()) {
+            Log.e(TAG, "没有找到任何模型文件");
+            Toast.makeText(requireContext(), "未找到任何模型文件", Toast.LENGTH_LONG).show();
+            return;
+        }
         
         // 初始化各模型配置
         setupModelConfigs();
@@ -265,12 +286,10 @@ public class IdentifyFragment extends Fragment {
         // 设置适配器
         modelSpinner.setAdapter(adapter);
         
-        // 设置默认选择为MobileNetV1
-        for (int i = 0; i < modelNames.size(); i++) {
-            if (modelNames.get(i).startsWith("MobileNetV1")) {
-                modelSpinner.setSelection(i);
-                break;
-            }
+        // 设置默认选择为第一个模型
+        if (!modelNames.isEmpty()) {
+            modelSpinner.setSelection(0);
+            currentModelPath = modelPathMap.get(modelNames.get(0));
         }
         
         // 设置选择监听器
@@ -328,35 +347,35 @@ public class IdentifyFragment extends Fragment {
     }
     
     private void setupModelConfigs() {
-        // 根据TensorFlow官方预处理方法设置参数
+        // 为每个找到的模型创建默认配置
+        modelConfigMap.clear();
         
-        // MobileNet 使用 [-1,1] 归一化
-        // x = (x - 127.5) / 127.5 = (x/255 - 0.5) / 0.5
-        float[] mobilenetMean = {0.5f, 0.5f, 0.5f};
-        float[] mobilenetStd = {0.5f, 0.5f, 0.5f};
+        // 获取所有模型文件
+        List<String> modelFiles = getModelFiles();
         
-        // MobileNetV2 也使用 [-1,1] 归一化
-        // 与MobileNetV1相同: x = (x - 127.5) / 127.5
-        float[] mobilenetv2Mean = {0.5f, 0.5f, 0.5f};
-        float[] mobilenetv2Std = {0.5f, 0.5f, 0.5f};
+        // 为每个模型设置默认配置
+        for (String modelFile : modelFiles) {
+            // 默认使用 [0,1] 归一化配置
+            float[] defaultMean = {0.0f, 0.0f, 0.0f};
+            float[] defaultStd = {1.0f, 1.0f, 1.0f};
+            boolean useBGR = false;
+            
+            // 根据模型名称设置特定配置
+            if (modelFile.toLowerCase().contains("mobilenet")) {
+                // MobileNet系列使用 [-1,1] 归一化
+                defaultMean = new float[]{0.5f, 0.5f, 0.5f};
+                defaultStd = new float[]{0.5f, 0.5f, 0.5f};
+            } else if (modelFile.toLowerCase().contains("resnet")) {
+                // ResNet使用BGR和特定均值
+                defaultMean = new float[]{0.406f, 0.456f, 0.485f};
+                defaultStd = new float[]{1.0f, 1.0f, 1.0f};
+                useBGR = true;
+            }
+            
+            modelConfigMap.put(modelFile, new ModelConfig(defaultMean, defaultStd, useBGR));
+        }
         
-        // EfficientNet 通常使用 [0,1] 归一化，无需额外处理
-        float[] efficientnetMean = {0.0f, 0.0f, 0.0f};
-        float[] efficientnetStd = {1.0f, 1.0f, 1.0f};
-        
-        // ResNet 使用 Caffe 预处理: BGR通道顺序, 减去均值 [103.939, 116.779, 123.68]
-        // 注意：Android中图像是RGB格式，需要逆序为BGR
-        // 均值换算为[0,1]范围: [103.939/255, 116.779/255, 123.68/255]
-        float[] resnetMean = {0.406f, 0.456f, 0.485f}; // BGR顺序(R=123.68, G=116.779, B=103.939)/255
-        float[] resnetStd = {1.0f, 1.0f, 1.0f}; // ResNet不进行标准化除法
-        
-        // 为每个模型设置正确的配置
-        modelConfigMap.put("MobileNetV1.tflite", new ModelConfig(mobilenetMean, mobilenetStd, false));
-        modelConfigMap.put("MobileNetV2.tflite", new ModelConfig(mobilenetv2Mean, mobilenetv2Std, false));
-        modelConfigMap.put("EfficientNetB0.tflite", new ModelConfig(efficientnetMean, efficientnetStd, false));
-        modelConfigMap.put("ResNet101.tflite", new ModelConfig(resnetMean, resnetStd, true)); // ResNet使用BGR
-        
-        Log.d(TAG, "已初始化" + modelConfigMap.size() + "个模型配置，与训练时使用的预处理方法匹配");
+        Log.d(TAG, "已为" + modelConfigMap.size() + "个模型设置配置");
     }
     
     private void initModelAndLabels() {
@@ -493,9 +512,16 @@ public class IdentifyFragment extends Fragment {
                 Log.d(TAG, "当前使用模型: " + getCurrentModelName());
             }
             
+            // 记录预处理开始时间
+            long preprocessStartTime = System.currentTimeMillis();
+            
             Log.d(TAG, "调整图像尺寸为 " + IMAGE_LENGTH + "x" + IMAGE_WIDTH);
             Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, IMAGE_LENGTH, IMAGE_WIDTH, true);
             ByteBuffer byteBuffer = convertBitmapToByteBuffer(resizedBitmap);
+            
+            // 计算预处理时间
+            long preprocessTime = System.currentTimeMillis() - preprocessStartTime;
+            Log.d(TAG, "图像预处理耗时: " + preprocessTime + "ms");
             
             // 获取模型输入输出形状
             int[] inputShape = tfliteInterpreter.getInputTensor(0).shape();
@@ -518,9 +544,22 @@ public class IdentifyFragment extends Fragment {
             long inferenceTime = System.currentTimeMillis() - inferenceStartTime;
             Log.d(TAG, "模型推理耗时: " + inferenceTime + "ms");
             
+            // 记录后处理开始时间
+            long postprocessStartTime = System.currentTimeMillis();
+            
             // 获取分类结果
             List<ResultAdapter.IdentifyResult> results = getSortedResults(output[0]);
-            updateUI(results);
+            
+            // 计算后处理时间
+            long postprocessTime = System.currentTimeMillis() - postprocessStartTime;
+            Log.d(TAG, "后处理耗时: " + postprocessTime + "ms");
+            
+            // 计算总耗时
+            long totalTime = preprocessTime + inferenceTime + postprocessTime;
+            Log.d(TAG, "总耗时: " + totalTime + "ms");
+            
+            // 显示性能信息和结果
+            showResults(results, preprocessTime, inferenceTime, postprocessTime);
             
         } catch (Exception e) {
             Log.e(TAG, "图像识别过程出错: " + e.getMessage(), e);
@@ -530,6 +569,68 @@ public class IdentifyFragment extends Fragment {
             emptyResultText.setText("识别失败: " + e.getMessage());
             emptyResultText.setVisibility(View.VISIBLE);
             resultRecyclerView.setVisibility(View.GONE);
+        }
+    }
+
+    private long getModelSize(String modelPath) {
+        try {
+            AssetFileDescriptor fileDescriptor = requireContext().getAssets().openFd(modelPath);
+            long size = fileDescriptor.getLength();
+            fileDescriptor.close();
+            return size;
+        } catch (IOException e) {
+            Log.e(TAG, "获取模型大小失败: " + e.getMessage());
+            return -1;
+        }
+    }
+
+    private String formatFileSize(long size) {
+        if (size <= 0) return "未知";
+        final String[] units = new String[] { "B", "KB", "MB", "GB" };
+        int digitGroups = (int) (Math.log10(size) / Math.log10(1024));
+        return String.format("%.2f %s", size / Math.pow(1024, digitGroups), units[digitGroups]);
+    }
+
+    private void showResults(List<ResultAdapter.IdentifyResult> results, 
+                           long preprocessTime, 
+                           long inferenceTime, 
+                           long postprocessTime) {
+        // 更新UI显示结果
+        if (results.size() > 0) {
+            // 获取当前模型大小
+            long modelSize = getModelSize(currentModelPath);
+            String formattedSize = formatFileSize(modelSize);
+            
+            // 构建性能信息文本
+            StringBuilder performanceInfo = new StringBuilder();
+            performanceInfo.append("识别性能统计：\n");
+            performanceInfo.append("模型大小: ").append(formattedSize).append("\n");
+            performanceInfo.append("预处理时间: ").append(preprocessTime).append("ms\n");
+            performanceInfo.append("推理时间: ").append(inferenceTime).append("ms\n");
+            performanceInfo.append("后处理时间: ").append(postprocessTime).append("ms\n");
+            performanceInfo.append("总耗时: ").append(preprocessTime + inferenceTime + postprocessTime).append("ms");
+            
+            // 显示性能信息
+            TextView performanceText = requireView().findViewById(R.id.performanceText);
+            if (performanceText != null) {
+                performanceText.setText(performanceInfo.toString());
+                performanceText.setVisibility(View.VISIBLE);
+            }
+            
+            // 显示识别结果
+            emptyResultText.setVisibility(View.GONE);
+            resultRecyclerView.setVisibility(View.VISIBLE);
+            resultAdapter.setResults(results);
+        } else {
+            emptyResultText.setText(R.string.recognition_error);
+            emptyResultText.setVisibility(View.VISIBLE);
+            resultRecyclerView.setVisibility(View.GONE);
+            
+            // 隐藏性能信息
+            TextView performanceText = requireView().findViewById(R.id.performanceText);
+            if (performanceText != null) {
+                performanceText.setVisibility(View.GONE);
+            }
         }
     }
 
@@ -689,24 +790,5 @@ public class IdentifyFragment extends Fragment {
         Log.d(TAG, "打开相机");
         Intent intent = new Intent(requireActivity(), CameraActivity.class);
         cameraLauncher.launch(intent);
-    }
-
-    // 将UI更新代码单独提取为一个方法
-    private void updateUI(List<ResultAdapter.IdentifyResult> results) {
-        Log.d(TAG, "识别结果数量: " + results.size());
-        
-        // 更新UI
-        if (results.size() > 0) {
-            Log.d(TAG, "第一个识别结果: " + results.get(0).getClassName() + 
-                    ", 概率: " + (results.get(0).getProbability() * 100) + "%");
-            emptyResultText.setVisibility(View.GONE);
-            resultRecyclerView.setVisibility(View.VISIBLE);
-            resultAdapter.setResults(results);
-        } else {
-            Log.e(TAG, "没有识别结果");
-            emptyResultText.setText(R.string.recognition_error);
-            emptyResultText.setVisibility(View.VISIBLE);
-            resultRecyclerView.setVisibility(View.GONE);
-        }
     }
 } 
